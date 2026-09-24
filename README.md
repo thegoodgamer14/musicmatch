@@ -6,10 +6,11 @@ Music Match pairs two people who are listening to the same song right now. Last.
 
 1. Open [https://www.last.fm/api/account/create](https://www.last.fm/api/account/create) and create an API account.
 2. Set the callback URL to `http://localhost:3000/api/auth/callback`.
+3. Copy the **API key** into `LASTFM_API_KEY` and the **Shared secret** into `LASTFM_API_SECRET`. Last.fm does not issue a session secret. Music Match creates its own login session after you approve the app.
 
 ## Run
 
-Copy `.env.example` to `.env.local`. Fill in `LASTFM_API_KEY`, `LASTFM_API_SECRET`, and `SESSION_SECRET`. Keep `APP_URL=http://localhost:3000`.
+Copy `.env.example` to `.env.local`. Fill in the API key and shared secret. Keep `APP_URL=http://localhost:3000`.
 
 ```bash
 npm install

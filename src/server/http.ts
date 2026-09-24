@@ -7,21 +7,18 @@ export type AuthFailure = "denied" | "rejected" | "unreachable";
 export function requireEnv(): {
   apiKey: string;
   apiSecret: string;
-  sessionSecret: string;
   appUrl: string;
 } {
   const apiKey = process.env.LASTFM_API_KEY;
   const apiSecret = process.env.LASTFM_API_SECRET;
-  const sessionSecret = process.env.SESSION_SECRET;
   const appUrl = process.env.APP_URL;
-  // The cookie stores a random session id. SESSION_SECRET is required, not written into it.
-  if (!apiKey || !apiSecret || !sessionSecret || !appUrl) {
-    const missing = ["LASTFM_API_KEY", "LASTFM_API_SECRET", "SESSION_SECRET", "APP_URL"].filter(
+  if (!apiKey || !apiSecret || !appUrl) {
+    const missing = ["LASTFM_API_KEY", "LASTFM_API_SECRET", "APP_URL"].filter(
       (name) => !process.env[name],
     );
     throw new Error(`Missing required environment: ${missing.join(", ")}`);
   }
-  return { apiKey, apiSecret, sessionSecret, appUrl };
+  return { apiKey, apiSecret, appUrl };
 }
 
 export function authorizeUrl(appUrl: string, apiKey: string): string {
