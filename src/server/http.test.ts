@@ -12,11 +12,12 @@ describe("authorizeUrl", () => {
     expect(url.searchParams.get("token")).toBeNull();
   });
 
-  it("includes a request token when Last.fm issued one", () => {
-    const url = new URL(authorizeUrl("http://localhost:3000/", "abc123", "tok"));
+  it("does not add a desktop token, so Last.fm can return to the callback", () => {
+    const url = new URL(authorizeUrl("http://localhost:3000/", "abc123"));
     expect(url.searchParams.get("api_key")).toBe("abc123");
-    expect(url.searchParams.get("token")).toBe("tok");
+    expect(url.searchParams.get("token")).toBeNull();
     expect(url.searchParams.get("cb")).toBe("http://localhost:3000/api/auth/callback");
+    expect([...url.searchParams.keys()]).toEqual(["api_key", "cb"]);
   });
 });
 

@@ -11,5 +11,5 @@ export async function POST() {
   if (!token.ok) {
     return NextResponse.redirect(new URL(failureRedirect("unreachable"), env.appUrl), 303);
   }
-  return NextResponse.redirect(authorizeUrl(env.appUrl, env.apiKey, token.token), 303);
+  return NextResponse.redirect(authorizeUrl(env.appUrl, env.apiKey), 303);
 }

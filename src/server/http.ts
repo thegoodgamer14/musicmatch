@@ -24,11 +24,12 @@ export function requireEnv(): {
   return { apiKey, apiSecret, sessionSecret, appUrl };
 }
 
-export function authorizeUrl(appUrl: string, apiKey: string, token?: string): string {
+export function authorizeUrl(appUrl: string, apiKey: string): string {
   const base = appUrl.endsWith("/") ? appUrl.slice(0, -1) : appUrl;
-  const params = new URLSearchParams({ api_key: apiKey });
-  if (token) params.set("token", token);
-  params.set("cb", `${base}/api/auth/callback`);
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    cb: `${base}/api/auth/callback`,
+  });
   return `https://www.last.fm/api/auth/?${params.toString()}`;
 }
 
