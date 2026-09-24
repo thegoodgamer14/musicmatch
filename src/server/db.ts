@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import Database from "better-sqlite3";
 
 const SCHEMA = `
@@ -78,4 +80,14 @@ export function openDatabase(path: string): Database.Database {
   }
   migrate(db);
   return db;
+}
+
+let singleton: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (singleton) return singleton;
+  const path = process.env.DATABASE_PATH || "data/musicmatch.db";
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  singleton = openDatabase(path);
+  return singleton;
 }

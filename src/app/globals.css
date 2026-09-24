@@ -1,0 +1,246 @@
+:root {
+  color-scheme: dark;
+  background: #1a1410;
+  color: #f6f0e6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #1a1410;
+  color: #f6f0e6;
+}
+
+body {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  background: #e85d34;
+  color: #1a1410;
+  border: 0;
+  border-radius: 999px;
+  min-height: 2.75rem;
+  padding: 0.7rem 1.15rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #3a312b;
+  color: #b5a89a;
+  cursor: not-allowed;
+}
+
+button.secondary,
+button.text-button {
+  background: transparent;
+  color: #f6f0e6;
+  border: 1px solid #b5a89a;
+}
+
+button.text-button {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.8rem;
+}
+
+button:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 2px solid #e85d34;
+  outline-offset: 2px;
+}
+
+a {
+  color: #f6f0e6;
+}
+
+.shell {
+  width: 100%;
+  max-width: 32rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.brand {
+  margin: 0;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  color: #b5a89a;
+}
+
+.card {
+  background: #241c17;
+  border-radius: 1.1rem;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+h1,
+.song-title {
+  font-family: "Iowan Old Style", Palatino, Georgia, serif;
+  font-weight: 500;
+  font-size: 1.85rem;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.muted {
+  color: #b5a89a;
+  margin: 0;
+}
+
+.notice {
+  margin: 0;
+  color: #f6f0e6;
+}
+
+.song {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.art,
+.avatar {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 0.7rem;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: #1a1410;
+}
+
+.avatar {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+}
+
+.fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #b5a89a;
+}
+
+.artists {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.artists li {
+  color: #b5a89a;
+  background: #1a1410;
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.9rem;
+}
+
+.partner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.partner a {
+  font-size: 1.15rem;
+}
+
+.away {
+  display: inline-block;
+  margin-left: 0.5rem;
+  color: #b5a89a;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.messages li {
+  max-width: 85%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.8rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.messages .mine {
+  align-self: flex-end;
+  background: #e85d34;
+  color: #1a1410;
+}
+
+.messages .theirs {
+  align-self: flex-start;
+  background: #1a1410;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.composer label {
+  color: #b5a89a;
+  font-size: 0.85rem;
+}
+
+.composer input {
+  width: 100%;
+  color: #f6f0e6;
+  background: #1a1410;
+  border: 1px solid #3a312b;
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.row button {
+  flex: 1;
+}
+
+.card > button,
+.card > form:not(.composer) button[type="submit"] {
+  width: 100%;
+}
