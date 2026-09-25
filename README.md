@@ -10,7 +10,7 @@ Music Match pairs two people who are listening to the same song right now. Last.
 
 ## Run
 
-Copy `.env.example` to `.env.local`. Fill in the API key and shared secret. Keep `APP_URL=http://localhost:3000`.
+Copy `.env.example` to `.env.local`. Fill in the API key, the shared secret, and `DATABASE_URL` (the same Supabase pooler string used in production). Keep `APP_URL=http://localhost:3000`. `npm run dev` reads that database. It no longer creates a local SQLite file.
 
 ```bash
 npm install
