@@ -27,6 +27,9 @@ input {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #e85d34;
   color: #1a1410;
   border: 0;
@@ -243,4 +246,37 @@ h1,
 .card > button,
 .card > form:not(.composer) button[type="submit"] {
   width: 100%;
+}
+
+.loader {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.spinner {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
+  animation: spin 0.8s linear infinite;
+}
+
+.status-line .spinner,
+.card > .loader .spinner {
+  width: 1.35rem;
+  height: 1.35rem;
+  color: #e85d34;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
 }

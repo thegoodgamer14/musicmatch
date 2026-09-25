@@ -10,6 +10,25 @@ type ChatMessage = Extract<AppState, { view: "chat" }>["messages"][number];
 type SongInfo = { artist: string; track: string; artworkUrl: string | null };
 
 const UNREACHABLE = "Last.fm could not be reached. Try again.";
+type Pending = "match" | "cancel" | "send" | "leave" | "signin" | "logout";
+
+function Spinner({ label }: { label: string }) {
+  return (
+    <span className="loader" role="status">
+      <svg className="spinner" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.28" />
+        <path
+          d="M21 12a9 9 0 0 0-9-9"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        />
+      </svg>
+      <span>{label}</span>
+    </span>
+  );
+}
 
 function signInCopy(code: string | null): string | null {
   if (code === "denied") return COPY.denied;
@@ -25,6 +44,7 @@ export default function Page() {
   const [draft, setDraft] = useState("");
   const [composerError, setComposerError] = useState<string | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const signedInRef = useRef(false);
   const pullGen = useRef(0);
@@ -131,18 +151,33 @@ export default function Page() {
   }, [beat, pullState]);
 
   async function findMatch() {
-    await fetch("/api/queue", { method: "POST" });
-    await pullState();
+    setPending("match");
+    try {
+      await fetch("/api/queue", { method: "POST" });
+      await pullState();
+    } finally {
+      setPending(null);
+    }
   }
 
   async function cancelWait() {
-    await fetch("/api/queue", { method: "DELETE" });
-    await pullState();
+    setPending("cancel");
+    try {
+      await fetch("/api/queue", { method: "DELETE" });
+      await pullState();
+    } finally {
+      setPending(null);
+    }
   }
 
   async function leave() {
-    await fetch("/api/match/leave", { method: "POST" });
-    await pullState();
+    setPending("leave");
+    try {
+      await fetch("/api/match/leave", { method: "POST" });
+      await pullState();
+    } finally {
+      setPending(null);
+    }
   }
 
   async function onSend(event: FormEvent<HTMLFormElement>) {
@@ -151,23 +186,28 @@ export default function Page() {
       setComposerError(COPY.emptyMessage);
       return;
     }
-    const response = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body: draft }),
-    });
-    if (response.status === 400) {
-      const body = (await response.json()) as { error?: unknown };
-      setComposerError(typeof body.error === "string" ? body.error : COPY.emptyMessage);
-      return;
-    }
-    if (!response.ok) {
+    setPending("send");
+    try {
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body: draft }),
+      });
+      if (response.status === 400) {
+        const body = (await response.json()) as { error?: unknown };
+        setComposerError(typeof body.error === "string" ? body.error : COPY.emptyMessage);
+        return;
+      }
+      if (!response.ok) {
+        await pullState();
+        return;
+      }
+      setDraft("");
+      setComposerError(null);
       await pullState();
-      return;
+    } finally {
+      setPending(null);
     }
-    setDraft("");
-    setComposerError(null);
-    await pullState();
   }
 
   const banner = kicked ? COPY.rejected : signInCopy(queryError);
@@ -177,23 +217,35 @@ export default function Page() {
       <header className="top">
         <p className="brand">Music Match</p>
         {state && state.view !== "signed_out" ? (
-          <form method="post" action="/api/auth/logout">
-            <button className="text-button" type="submit">
-              Log out
+          <form method="post" action="/api/auth/logout" onSubmit={() => setPending("logout")}>
+            <button className="text-button" type="submit" disabled={pending === "logout"}>
+              {pending === "logout" ? <Spinner label="Logging out" /> : "Log out"}
             </button>
           </form>
         ) : null}
       </header>
-      {state == null ? <p className="muted">Loading…</p> : null}
-      {state?.view === "signed_out" ? <SignIn banner={banner} /> : null}
-      {state?.view === "home" ? <Home state={state} onFind={() => void findMatch()} /> : null}
-      {state?.view === "waiting" ? <Waiting state={state} onCancel={() => void cancelWait()} /> : null}
+      {state == null ? (
+        <section className="card">
+          <Spinner label="Loading" />
+        </section>
+      ) : null}
+      {state?.view === "signed_out" ? (
+        <SignIn banner={banner} pending={pending === "signin"} onStart={() => setPending("signin")} />
+      ) : null}
+      {state?.view === "home" ? (
+        <Home state={state} pending={pending === "match"} onFind={() => void findMatch()} />
+      ) : null}
+      {state?.view === "waiting" ? (
+        <Waiting state={state} pending={pending === "cancel"} onCancel={() => void cancelWait()} />
+      ) : null}
       {state?.view === "chat" ? (
         <Chat
           state={state}
           messages={messages}
           draft={draft}
           composerError={composerError}
+          sending={pending === "send"}
+          leaving={pending === "leave"}
           onDraft={(value) => {
             setDraft(value);
             if (composerError) setComposerError(null);
@@ -206,7 +258,15 @@ export default function Page() {
   );
 }
 
-function SignIn({ banner }: { banner: string | null }) {
+function SignIn({
+  banner,
+  pending,
+  onStart,
+}: {
+  banner: string | null;
+  pending: boolean;
+  onStart: () => void;
+}) {
   return (
     <section className="card">
       <h1>Listen with someone on the same song.</h1>
@@ -216,21 +276,31 @@ function SignIn({ banner }: { banner: string | null }) {
           {banner}
         </p>
       ) : null}
-      <form method="post" action="/api/auth/lastfm">
-        <button type="submit">Continue with Last.fm</button>
+      <form method="post" action="/api/auth/lastfm" onSubmit={onStart}>
+        <button type="submit" disabled={pending}>
+          {pending ? <Spinner label="Opening Last.fm" /> : "Continue with Last.fm"}
+        </button>
       </form>
     </section>
   );
 }
 
-function Home({ state, onFind }: { state: Extract<AppState, { view: "home" }>; onFind: () => void }) {
+function Home({
+  state,
+  pending,
+  onFind,
+}: {
+  state: Extract<AppState, { view: "home" }>;
+  pending: boolean;
+  onFind: () => void;
+}) {
   return (
     <section className="card">
       <Song song={state.nowPlaying} empty={COPY.nothingPlaying} />
       <Artists artists={state.recentArtists} />
       {state.notice ? <p className="notice">{state.notice}</p> : null}
-      <button type="button" disabled={!state.canMatch} onClick={onFind}>
-        Find a match
+      <button type="button" disabled={!state.canMatch || pending} onClick={onFind}>
+        {pending ? <Spinner label="Finding a match" /> : "Find a match"}
       </button>
     </section>
   );
@@ -238,18 +308,20 @@ function Home({ state, onFind }: { state: Extract<AppState, { view: "home" }>; o
 
 function Waiting({
   state,
+  pending,
   onCancel,
 }: {
   state: Extract<AppState, { view: "waiting" }>;
+  pending: boolean;
   onCancel: () => void;
 }) {
   return (
-    <section className="card">
-      <p className="muted">Waiting for someone on this song.</p>
+    <section className="card" aria-busy="true">
+      <Spinner label="Looking for someone on this song" />
       <Song song={state.song} empty="" />
       {state.notice ? <p className="notice">{state.notice}</p> : null}
-      <button className="secondary" type="button" onClick={onCancel}>
-        Cancel
+      <button className="secondary" type="button" disabled={pending} onClick={onCancel}>
+        {pending ? <Spinner label="Cancelling" /> : "Cancel"}
       </button>
     </section>
   );
@@ -260,6 +332,8 @@ function Chat({
   messages,
   draft,
   composerError,
+  sending,
+  leaving,
   onDraft,
   onSend,
   onLeave,
@@ -268,6 +342,8 @@ function Chat({
   messages: ChatMessage[];
   draft: string;
   composerError: string | null;
+  sending: boolean;
+  leaving: boolean;
   onDraft: (value: string) => void;
   onSend: (event: FormEvent<HTMLFormElement>) => void;
   onLeave: () => void;
@@ -311,9 +387,11 @@ function Chat({
           </p>
         ) : null}
         <div className="row">
-          <button type="submit">Send</button>
-          <button className="secondary" type="button" onClick={onLeave}>
-            Leave
+          <button type="submit" disabled={sending || leaving}>
+            {sending ? <Spinner label="Sending" /> : "Send"}
+          </button>
+          <button className="secondary" type="button" disabled={sending || leaving} onClick={onLeave}>
+            {leaving ? <Spinner label="Leaving" /> : "Leave"}
           </button>
         </div>
       </form>
