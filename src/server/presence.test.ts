@@ -3,11 +3,13 @@ import { openTestDatabase, type Db } from "./db";
 import type { LastfmClient, LastfmTrack } from "./lastfm";
 import { songKey } from "./song-key";
 import {
+  HEARTBEAT_MS,
   LASTFM_REFRESH_MS,
   NOW_PLAYING_TTL_MS,
   PRESENCE_MS,
   PROFILE_TTL_MS,
   SESSION_TTL_MS,
+  STATE_POLL_MS,
 } from "./constants";
 import { COPY } from "./copy";
 import {
@@ -94,6 +96,8 @@ async function insertQueue(db: Db, userId: number, artist: string, title: string
 describe("constants and copy", () => {
   it("uses the presence windows and the exact user-facing strings", () => {
     expect(PRESENCE_MS).toBe(90_000);
+    expect(STATE_POLL_MS).toBe(8000);
+    expect(HEARTBEAT_MS).toBe(30000);
     expect(LASTFM_REFRESH_MS).toBe(15_000);
     expect(NOW_PLAYING_TTL_MS).toBe(60_000);
     expect(PROFILE_TTL_MS).toBe(60 * 60 * 1000);

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { AppState } from "@/server/app-state";
+import { HEARTBEAT_MS, STATE_POLL_MS } from "@/server/constants";
 import { COPY } from "@/server/copy";
 
 type ChatMessage = Extract<AppState, { view: "chat" }>["messages"][number];
@@ -110,10 +111,10 @@ export default function Page() {
       void beat();
       stateTimer = window.setInterval(() => {
         void pullState();
-      }, 2000);
+      }, STATE_POLL_MS);
       presenceTimer = window.setInterval(() => {
         void beat();
-      }, 10000);
+      }, HEARTBEAT_MS);
     }
 
     function onVisibility() {
