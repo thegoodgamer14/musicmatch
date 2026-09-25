@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { openTestDatabase } from "./db";
+import { afterEach, describe, expect, it } from "vitest";
+import { getDb, openTestDatabase, setPostgresConnectorForTests, withRequestDb } from "./db";
 
 describe("openTestDatabase", () => {
   it("creates users and rejects a second queue row for the same user", async () => {
@@ -35,5 +35,44 @@ describe("openTestDatabase", () => {
         [1, "k2", "A", "T2", 2],
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe("withRequestDb", () => {
+  afterEach(() => {
+    setPostgresConnectorForTests(null);
+  });
+
+  it("uses a distinct client per call and throws outside a request", async () => {
+    const created: object[] = [];
+    let ended = 0;
+    setPostgresConnectorForTests(() => {
+      const client = {
+        async unsafe() {
+          return Object.assign([], { columns: null as { name: string; type: number }[] | null });
+        },
+        async end() {
+          ended += 1;
+        },
+      };
+      created.push(client);
+      return client;
+    });
+
+    expect(() => getDb()).toThrow("Database client used outside a request");
+
+    const first = await withRequestDb(async () => getDb());
+    const second = await withRequestDb(async () => getDb());
+    expect(first).not.toBe(second);
+    expect(created).toHaveLength(2);
+
+    await expect(
+      withRequestDb(async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(created).toHaveLength(3);
+    expect(ended).toBe(3);
+    expect(() => getDb()).toThrow("Database client used outside a request");
   });
 });

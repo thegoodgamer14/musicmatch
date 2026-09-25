@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { PGlite, Transaction } from "@electric-sql/pglite";
 
 const require = createRequire(import.meta.url);
@@ -46,7 +48,18 @@ type PostgresQueryable = {
   unsafe(query: string, parameters?: unknown[]): Promise<PostgresRows>;
   begin?<T>(fn: (tx: PostgresQueryable) => Promise<T>): Promise<T>;
   savepoint?<T>(fn: (tx: PostgresQueryable) => Promise<T>): Promise<T>;
+  end(options?: { timeout?: number }): Promise<void>;
 };
+
+type PostgresOptions = {
+  prepare: boolean;
+  max: number;
+  fetch_types: boolean;
+  connect_timeout: number;
+  types: { bigint: typeof bigintAsNumber };
+};
+
+export type PostgresConnector = (url: string, options: PostgresOptions) => PostgresQueryable;
 
 async function queryPostgres<T extends Record<string, unknown>>(
   sql: PostgresQueryable,
@@ -134,18 +147,58 @@ const bigintAsNumber = {
   serialize: (value: number | bigint | string) => String(value),
 };
 
-let singleton: Db | null = null;
+const requestDb = new AsyncLocalStorage<Db>();
+let connectorOverride: PostgresConnector | null = null;
+
+export function setPostgresConnectorForTests(connector: PostgresConnector | null): void {
+  connectorOverride = connector;
+}
+
+function postgresOptions(prepare: boolean): PostgresOptions {
+  return {
+    prepare,
+    max: 1,
+    fetch_types: false,
+    connect_timeout: 10,
+    types: { bigint: bigintAsNumber },
+  };
+}
+
+function hyperdriveConnectionString(): string | undefined {
+  try {
+    const env = getCloudflareContext().env as { HYPERDRIVE?: { connectionString?: string } };
+    const connectionString = env.HYPERDRIVE?.connectionString;
+    if (connectionString) return connectionString;
+  } catch {
+    // Outside a Worker there is no Cloudflare context.
+  }
+  return undefined;
+}
+
+function openClient(): PostgresQueryable {
+  if (connectorOverride) {
+    return connectorOverride("postgres://musicmatch-test", postgresOptions(false));
+  }
+  const hyperdrive = hyperdriveConnectionString();
+  const url = hyperdrive ?? process.env.DATABASE_URL;
+  if (!url) throw new Error("Missing required environment: DATABASE_URL");
+  const postgres = require("postgres") as (url: string, options: PostgresOptions) => PostgresQueryable;
+  return postgres(url, postgresOptions(Boolean(hyperdrive)));
+}
 
 export function getDb(): Db {
-  if (singleton) return singleton;
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("Missing required environment: DATABASE_URL");
-  const postgres = require("postgres") as (
-    url: string,
-    options: { prepare: boolean; types: { bigint: typeof bigintAsNumber } },
-  ) => PostgresQueryable;
-  singleton = wrapPostgres(postgres(url, { prepare: false, types: { bigint: bigintAsNumber } }));
-  return singleton;
+  const db = requestDb.getStore();
+  if (!db) throw new Error("Database client used outside a request");
+  return db;
+}
+
+export async function withRequestDb<T>(fn: () => Promise<T>): Promise<T> {
+  const client = openClient();
+  try {
+    return await requestDb.run(wrapPostgres(client), fn);
+  } finally {
+    await client.end();
+  }
 }
 
 export async function openTestDatabase(): Promise<Db> {
