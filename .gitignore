@@ -7,3 +7,9 @@ data
 .superpowers/
 .worktrees/
 docs/
+.supabase-db-password
+supabase/.temp/
+.open-next/
+.dev.vars
+.wrangler/
+.grok/
