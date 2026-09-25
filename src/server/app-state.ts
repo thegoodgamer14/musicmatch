@@ -220,6 +220,7 @@ export async function joinQueue(
   db: Db,
   userId: number,
   now: number,
+  beforeQueueRead?: (tx: Db) => Promise<void>,
 ): Promise<"waiting" | "matched" | "unavailable" | "in_chat"> {
   if (await activeMatch(db, userId)) return "in_chat";
 
@@ -250,11 +251,13 @@ export async function joinQueue(
       }
 
       if (await activeMatch(tx, userId)) return "in_chat" as const;
+      if (beforeQueueRead) await beforeQueueRead(tx);
       const locked = await tx.one<QueueRow>(
         `SELECT song_key, artist, track, artwork_url, joined_at
          FROM queue WHERE user_id = $1 FOR UPDATE`,
         [userId],
       );
+      if (await activeMatch(tx, userId)) return "in_chat" as const;
       if (locked?.song_key === songKey) return "waiting" as const;
       if (locked && !lockKeys.includes(locked.song_key)) return "retry" as const;
 

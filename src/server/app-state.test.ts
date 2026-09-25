@@ -332,6 +332,27 @@ describe("joinQueue", () => {
     expect(await queueRow(db, alpha.userId)).toBeUndefined();
   });
 
+  it("does not insert a queue row when a match appears before the locked re-read", async () => {
+    const db = await tempDb();
+    const alpha = await seedUser(db, { username: "alpha" });
+    const beta = await seedUser(db, { username: "beta" });
+    await insertQueue(db, alpha.userId, NOW, OTHER_KEY, "Other Artist", "Other Track", null);
+
+    const status = await joinQueue(db, alpha.userId, NOW + 1, async (tx) => {
+      await tx.exec(
+        `INSERT INTO matches (
+           song_key, artist, track, artwork_url, user_a_id, user_b_id,
+           snapshot_a, snapshot_b, status, created_at
+         ) VALUES ($1, 'Other Artist', 'Other Track', NULL, $2, $3, '{}', '{}', 'active', $4)`,
+        [OTHER_KEY, alpha.userId, beta.userId, NOW + 1],
+      );
+      await tx.exec("DELETE FROM queue WHERE user_id = $1", [alpha.userId]);
+    });
+
+    expect(status).toBe("in_chat");
+    expect(await queueRow(db, alpha.userId)).toBeUndefined();
+  });
+
   it("returns unavailable and does not write a queue row when the cache cannot be matched", async () => {
     const db = await tempDb();
     const missing = await seedUser(db, { username: "missing", cache: null });
