@@ -8,13 +8,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "better-sqlite3": "^11.9.0",
+    "@electric-sql/pglite": "^0.5.8",
     "next": "^15.2.4",
+    "postgres": "^3.4.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.14",
     "@types/react": "^19.0.12",
     "@types/react-dom": "^19.0.4",

@@ -13,6 +13,6 @@ export async function GET(request: Request) {
   const parsed = raw == null || raw === "" ? 0 : Number(raw);
   const after = Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 0;
   const sessionId = (await cookies()).get("musicmatch_session")?.value ?? null;
-  const state = readState(getDb(), sessionId, now, after);
+  const state = await readState(getDb(), sessionId, now, after);
   return NextResponse.json(state, { headers: { "Cache-Control": "no-store" } });
 }

@@ -45,12 +45,12 @@ export function clearedSessionCookie(appUrl: string): string {
   return cookie;
 }
 
-export function loadUser(
+export async function loadUser(
   sessionId: string | null,
   now: number,
-): { sessionId: string; userId: number } | null {
+): Promise<{ sessionId: string; userId: number } | null> {
   if (!sessionId) return null;
-  const session = readSession(getDb(), sessionId, now);
+  const session = await readSession(getDb(), sessionId, now);
   if (!session) return null;
   return { sessionId, userId: session.userId };
 }

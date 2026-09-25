@@ -1,93 +1,160 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import Database from "better-sqlite3";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { PGlite, Transaction } from "@electric-sql/pglite";
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY,
-  lastfm_username TEXT NOT NULL UNIQUE,
-  lastfm_session_key TEXT NOT NULL,
-  avatar_url TEXT,
-  profile_url TEXT,
-  profile_fetched_at INTEGER,
-  created_at INTEGER NOT NULL,
-  last_heartbeat_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS now_playing (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id),
-  artist TEXT,
-  track TEXT,
-  album TEXT,
-  artwork_url TEXT,
-  is_now_playing INTEGER NOT NULL,
-  song_key TEXT,
-  recent_artists TEXT NOT NULL,
-  fetched_at INTEGER NOT NULL,
-  attempted_at INTEGER NOT NULL,
-  error TEXT
-);
-CREATE TABLE IF NOT EXISTS queue (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id),
-  song_key TEXT NOT NULL,
-  artist TEXT NOT NULL,
-  track TEXT NOT NULL,
-  artwork_url TEXT,
-  joined_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS matches (
-  id INTEGER PRIMARY KEY,
-  song_key TEXT NOT NULL,
-  artist TEXT NOT NULL,
-  track TEXT NOT NULL,
-  artwork_url TEXT,
-  user_a_id INTEGER NOT NULL,
-  user_b_id INTEGER NOT NULL,
-  snapshot_a TEXT NOT NULL,
-  snapshot_b TEXT NOT NULL,
-  status TEXT NOT NULL,
-  ended_by INTEGER,
-  created_at INTEGER NOT NULL,
-  ended_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY,
-  match_id INTEGER NOT NULL REFERENCES matches(id),
-  sender_id INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS pairs (
-  user_lo INTEGER NOT NULL,
-  user_hi INTEGER NOT NULL,
-  PRIMARY KEY (user_lo, user_hi)
-);
-`;
+const require = createRequire(import.meta.url);
 
-export function migrate(db: Database.Database): void {
-  db.exec(SCHEMA);
+export interface Db {
+  query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  one<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | undefined>;
+  exec(sql: string, params?: unknown[]): Promise<void>;
+  transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
 }
 
-export function openDatabase(path: string): Database.Database {
-  const db = new Database(path);
-  db.pragma("foreign_keys = ON");
-  if (path !== ":memory:") {
-    db.pragma("journal_mode = WAL");
-  }
-  migrate(db);
+const INTEGER_OIDS = new Set([20, 21, 23]);
+
+type Field = { name: string; type: number };
+
+function coerceInteger(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return Number(value);
+  return value;
+}
+
+function normalizeRows<T extends Record<string, unknown>>(
+  rows: readonly Record<string, unknown>[],
+  fields: readonly Field[],
+): T[] {
+  return rows.map((row) => {
+    const out: Record<string, unknown> = {};
+    const names = fields.length > 0 ? fields.map((field) => field.name) : Object.keys(row);
+    for (const name of names) out[name] = row[name];
+    for (const field of fields) {
+      if (!INTEGER_OIDS.has(field.type)) continue;
+      out[field.name] = coerceInteger(out[field.name]);
+    }
+    return out as T;
+  });
+}
+
+type PostgresRows = Array<Record<string, unknown>> & {
+  columns: { name: string; type: number }[] | null;
+};
+
+type PostgresQueryable = {
+  unsafe(query: string, parameters?: unknown[]): Promise<PostgresRows>;
+  begin?<T>(fn: (tx: PostgresQueryable) => Promise<T>): Promise<T>;
+  savepoint?<T>(fn: (tx: PostgresQueryable) => Promise<T>): Promise<T>;
+};
+
+async function queryPostgres<T extends Record<string, unknown>>(
+  sql: PostgresQueryable,
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const rows = await sql.unsafe(text, params);
+  const fields = (rows.columns ?? []).map((column) => ({ name: column.name, type: column.type }));
+  return normalizeRows<T>(rows, fields);
+}
+
+function wrapPostgres(sql: PostgresQueryable): Db {
+  return {
+    query: (text, params) => queryPostgres(sql, text, params),
+    async one<T extends Record<string, unknown>>(text: string, params?: unknown[]): Promise<T | undefined> {
+      const rows = await queryPostgres<T>(sql, text, params);
+      return rows[0];
+    },
+    async exec(text, params = []) {
+      await sql.unsafe(text, params);
+    },
+    transaction(fn) {
+      if (sql.begin) return sql.begin((tx) => fn(wrapPostgres(tx)));
+      if (!sql.savepoint) throw new Error("Nested transactions are not available");
+      return sql.savepoint((tx) => fn(wrapPostgres(tx)));
+    },
+  };
+}
+
+type PgliteQueryable = {
+  query(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[]; fields: { name: string; dataTypeID: number }[] }>;
+  exec(sql: string): Promise<unknown>;
+  transaction?<T>(fn: (tx: Transaction) => Promise<T>): Promise<T>;
+};
+
+async function queryPglite<T extends Record<string, unknown>>(
+  client: PgliteQueryable,
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const result = await client.query(text, params);
+  const fields = result.fields.map((field) => ({ name: field.name, type: field.dataTypeID }));
+  return normalizeRows<T>(result.rows, fields);
+}
+
+function wrapPglite(client: PgliteQueryable, nested: boolean): Db {
+  const db: Db = {
+    query: (text, params) => queryPglite(client, text, params),
+    async one<T extends Record<string, unknown>>(text: string, params?: unknown[]): Promise<T | undefined> {
+      const rows = await queryPglite<T>(client, text, params);
+      return rows[0];
+    },
+    async exec(text, params = []) {
+      if (params.length > 0) {
+        await client.query(text, params);
+        return;
+      }
+      await client.exec(text);
+    },
+    async transaction(fn) {
+      if (!nested && client.transaction) {
+        return client.transaction(async (tx) => fn(wrapPglite(tx, true)));
+      }
+      await client.exec("SAVEPOINT musicmatch_tx");
+      try {
+        const result = await fn(db);
+        await client.exec("RELEASE SAVEPOINT musicmatch_tx");
+        return result;
+      } catch (error) {
+        await client.exec("ROLLBACK TO SAVEPOINT musicmatch_tx");
+        throw error;
+      }
+    },
+  };
   return db;
 }
 
-let singleton: Database.Database | null = null;
+const bigintAsNumber = {
+  to: 20,
+  from: [20],
+  parse: (value: string) => Number(value),
+  serialize: (value: number | bigint | string) => String(value),
+};
 
-export function getDb(): Database.Database {
+let singleton: Db | null = null;
+
+export function getDb(): Db {
   if (singleton) return singleton;
-  const path = process.env.DATABASE_PATH || "data/musicmatch.db";
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  singleton = openDatabase(path);
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("Missing required environment: DATABASE_URL");
+  const postgres = require("postgres") as (
+    url: string,
+    options: { prepare: boolean; types: { bigint: typeof bigintAsNumber } },
+  ) => PostgresQueryable;
+  singleton = wrapPostgres(postgres(url, { prepare: false, types: { bigint: bigintAsNumber } }));
   return singleton;
+}
+
+export async function openTestDatabase(): Promise<Db> {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const pg: PGlite = new PGlite();
+  const migration = readFileSync(
+    join(process.cwd(), "supabase/migrations/20260925120000_musicmatch.sql"),
+    "utf8",
+  );
+  await pg.exec(migration);
+  return wrapPglite(pg, false);
 }

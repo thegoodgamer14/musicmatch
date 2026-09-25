@@ -1,29 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { openDatabase } from "./db";
+import { describe, expect, it } from "vitest";
+import { openTestDatabase } from "./db";
 
-const dirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-  dirs.length = 0;
-});
-
-function tempDb() {
-  const dir = mkdtempSync(join(tmpdir(), "musicmatch-"));
-  dirs.push(dir);
-  return openDatabase(join(dir, "app.db"));
-}
-
-describe("openDatabase", () => {
-  it("creates the match tables and enforces one queue row per user", () => {
-    const db = tempDb();
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-      .all()
-      .map((row) => (row as { name: string }).name);
+describe("openTestDatabase", () => {
+  it("creates users and rejects a second queue row for the same user", async () => {
+    const db = await openTestDatabase();
+    const tables = await db.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+    );
+    const names = tables.map((row) => row.table_name);
     for (const name of [
       "users",
       "sessions",
@@ -33,21 +18,22 @@ describe("openDatabase", () => {
       "messages",
       "pairs",
     ]) {
-      expect(tables).toContain(name);
+      expect(names).toContain(name);
     }
 
-    db.prepare(
-      "INSERT INTO users (lastfm_username, lastfm_session_key, created_at) VALUES ('a', 'k', 1)",
-    ).run();
-    db.prepare(
-      "INSERT INTO queue (user_id, song_key, artist, track, joined_at) VALUES (1, 'k', 'A', 'T', 1)",
-    ).run();
-    expect(() =>
-      db
-        .prepare(
-          "INSERT INTO queue (user_id, song_key, artist, track, joined_at) VALUES (1, 'k2', 'A', 'T2', 2)",
-        )
-        .run(),
-    ).toThrow();
+    await db.exec(
+      "INSERT INTO users (lastfm_username, lastfm_session_key, created_at) VALUES ($1, $2, $3)",
+      ["a", "k", 1],
+    );
+    await db.exec(
+      "INSERT INTO queue (user_id, song_key, artist, track, joined_at) VALUES ($1, $2, $3, $4, $5)",
+      [1, "k", "A", "T", 1],
+    );
+    await expect(
+      db.exec(
+        "INSERT INTO queue (user_id, song_key, artist, track, joined_at) VALUES ($1, $2, $3, $4, $5)",
+        [1, "k2", "A", "T2", 2],
+      ),
+    ).rejects.toThrow();
   });
 });

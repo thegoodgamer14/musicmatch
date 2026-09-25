@@ -12,15 +12,15 @@ export async function POST() {
   const env = requireEnv();
   const now = Date.now();
   const sessionId = (await cookies()).get("musicmatch_session")?.value ?? null;
-  const user = loadUser(sessionId, now);
+  const user = await loadUser(sessionId, now);
   if (!user) return new NextResponse(null, { status: 401 });
 
   const db = getDb();
-  recordHeartbeat(db, user.sessionId, now);
+  await recordHeartbeat(db, user.sessionId, now);
   const client = createLastfmClient({ apiKey: env.apiKey, sharedSecret: env.apiSecret });
   await refreshIfDue(db, user.userId, client, now);
 
-  if (!readSession(db, user.sessionId, now)) {
+  if (!(await readSession(db, user.sessionId, now))) {
     const response = NextResponse.json(
       { error: COPY.rejected },
       { status: 401 },

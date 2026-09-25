@@ -13,17 +13,17 @@ async function sessionId(): Promise<string | null> {
 export async function POST() {
   requireEnv();
   const now = Date.now();
-  const user = loadUser(await sessionId(), now);
+  const user = await loadUser(await sessionId(), now);
   if (!user) return new NextResponse(null, { status: 401 });
-  const status = joinQueue(getDb(), user.userId, now);
+  const status = await joinQueue(getDb(), user.userId, now);
   return NextResponse.json({ status });
 }
 
 export async function DELETE() {
   requireEnv();
   const now = Date.now();
-  const user = loadUser(await sessionId(), now);
+  const user = await loadUser(await sessionId(), now);
   if (!user) return new NextResponse(null, { status: 401 });
-  cancelQueue(getDb(), user.userId);
+  await cancelQueue(getDb(), user.userId);
   return new NextResponse(null, { status: 204 });
 }

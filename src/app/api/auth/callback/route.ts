@@ -26,14 +26,14 @@ export async function GET(request: Request) {
 
   const now = Date.now();
   const db = getDb();
-  const userId = upsertUser(db, {
+  const userId = await upsertUser(db, {
     username: session.username,
     sessionKey: session.sessionKey,
     now,
     avatarUrl: info.avatarUrl,
     profileUrl: info.profileUrl,
   });
-  const sessionId = createSession(db, userId, now);
+  const sessionId = await createSession(db, userId, now);
   const response = NextResponse.redirect(new URL("/", env.appUrl), 303);
   response.headers.set("Set-Cookie", sessionCookie(sessionId, env.appUrl));
   return response;

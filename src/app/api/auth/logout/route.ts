@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function POST() {
   const env = requireEnv();
   const sessionId = (await cookies()).get("musicmatch_session")?.value;
-  if (sessionId) logout(getDb(), sessionId);
+  if (sessionId) await logout(getDb(), sessionId);
   const response = NextResponse.redirect(new URL("/", env.appUrl), 303);
   response.headers.set("Set-Cookie", clearedSessionCookie(env.appUrl));
   return response;

@@ -10,8 +10,8 @@ export async function POST() {
   requireEnv();
   const now = Date.now();
   const sessionId = (await cookies()).get("musicmatch_session")?.value ?? null;
-  const user = loadUser(sessionId, now);
+  const user = await loadUser(sessionId, now);
   if (!user) return new NextResponse(null, { status: 401 });
-  const ended = leaveMatch(getDb(), user.userId, now);
+  const ended = await leaveMatch(getDb(), user.userId, now);
   return NextResponse.json(ended);
 }

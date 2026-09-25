@@ -3,5 +3,5 @@ export function normalizeName(value: string): string {
 }
 
 export function songKey(artist: string, track: string): string {
-  return `${normalizeName(artist)}\u0000${normalizeName(track)}`;
+  return `${normalizeName(artist)}\u001f${normalizeName(track)}`;
 }

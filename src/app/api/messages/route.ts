@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   requireEnv();
   const now = Date.now();
   const sessionId = (await cookies()).get("musicmatch_session")?.value ?? null;
-  const user = loadUser(sessionId, now);
+  const user = await loadUser(sessionId, now);
   if (!user) return new NextResponse(null, { status: 401 });
 
   let body = "";
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     body = "";
   }
 
-  const result = sendMessage(getDb(), user.userId, body, now);
+  const result = await sendMessage(getDb(), user.userId, body, now);
   if (!result.ok) {
     if (result.error === "empty" || result.error === "too_long") {
       return NextResponse.json(messageErrorBody(result.error), { status: 400 });

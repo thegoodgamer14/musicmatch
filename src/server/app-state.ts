@@ -1,10 +1,8 @@
-import Database from "better-sqlite3";
 import { NOW_PLAYING_TTL_MS, PRESENCE_MS } from "./constants";
 import { COPY } from "./copy";
+import type { Db } from "./db";
 import { tryPair } from "./matchmaker";
 import { deleteSession, readSession } from "./presence";
-
-type Db = Database.Database;
 
 export type AppState =
   | { view: "signed_out"; error: null }
@@ -34,7 +32,7 @@ export type AppState =
       messages: { id: number; senderId: number; body: string; createdAt: number }[];
     };
 
-type NowPlayingRow = {
+interface NowPlayingRow extends Record<string, unknown> {
   artist: string | null;
   track: string | null;
   artwork_url: string | null;
@@ -43,9 +41,9 @@ type NowPlayingRow = {
   recent_artists: string;
   fetched_at: number;
   error: string | null;
-};
+}
 
-type MatchRow = {
+interface MatchRow extends Record<string, unknown> {
   id: number;
   artist: string;
   track: string;
@@ -54,54 +52,63 @@ type MatchRow = {
   user_b_id: number;
   snapshot_a: string;
   snapshot_b: string;
-};
+}
 
-type QueueRow = {
+interface QueueRow extends Record<string, unknown> {
   song_key: string;
   artist: string;
   track: string;
   artwork_url: string | null;
   joined_at: number;
-};
+}
 
-type MessageRow = {
+interface MessageRow extends Record<string, unknown> {
   id: number;
   sender_id: number;
   body: string;
   created_at: number;
-};
+}
+
+interface HeartbeatRow extends Record<string, unknown> {
+  last_heartbeat_at: number | null;
+}
+
+interface UserIdRow extends Record<string, unknown> {
+  user_id: number;
+}
+
+interface IdRow extends Record<string, unknown> {
+  id: number;
+}
 
 function cacheIsCurrent(fetchedAt: number, now: number): boolean {
   return fetchedAt > now - NOW_PLAYING_TTL_MS;
 }
 
-function nowPlaying(db: Db, userId: number): NowPlayingRow | undefined {
-  return db
-    .prepare(
-      `SELECT artist, track, artwork_url, is_now_playing, song_key, recent_artists, fetched_at, error
-       FROM now_playing WHERE user_id = ?`,
-    )
-    .get(userId) as NowPlayingRow | undefined;
+async function nowPlaying(db: Db, userId: number): Promise<NowPlayingRow | undefined> {
+  return db.one<NowPlayingRow>(
+    `SELECT artist, track, artwork_url, is_now_playing, song_key, recent_artists, fetched_at, error
+     FROM now_playing WHERE user_id = $1`,
+    [userId],
+  );
 }
 
-function activeMatch(db: Db, userId: number): MatchRow | undefined {
-  return db
-    .prepare(
-      `SELECT id, artist, track, artwork_url, user_a_id, user_b_id, snapshot_a, snapshot_b
-       FROM matches
-       WHERE status = 'active' AND (user_a_id = ? OR user_b_id = ?)
-       ORDER BY id ASC
-       LIMIT 1`,
-    )
-    .get(userId, userId) as MatchRow | undefined;
+async function activeMatch(db: Db, userId: number): Promise<MatchRow | undefined> {
+  return db.one<MatchRow>(
+    `SELECT id, artist, track, artwork_url, user_a_id, user_b_id, snapshot_a, snapshot_b
+     FROM matches
+     WHERE status = 'active' AND (user_a_id = $1 OR user_b_id = $1)
+     ORDER BY id ASC
+     LIMIT 1`,
+    [userId],
+  );
 }
 
-function queueFor(db: Db, userId: number): QueueRow | undefined {
-  return db
-    .prepare(
-      "SELECT song_key, artist, track, artwork_url, joined_at FROM queue WHERE user_id = ?",
-    )
-    .get(userId) as QueueRow | undefined;
+async function queueFor(db: Db, userId: number): Promise<QueueRow | undefined> {
+  return db.one<QueueRow>(
+    "SELECT song_key, artist, track, artwork_url, joined_at FROM queue WHERE user_id = $1",
+    [userId],
+  );
 }
 
 function recentArtists(raw: string): string[] {
@@ -136,29 +143,28 @@ function partnerSnapshot(raw: string): {
   };
 }
 
-function chatState(
+async function chatState(
   db: Db,
   userId: number,
   match: MatchRow,
   afterMessageId: number,
   now: number,
-): AppState {
+): Promise<AppState> {
   const selfIsA = match.user_a_id === userId;
   const partnerId = selfIsA ? match.user_b_id : match.user_a_id;
   const snapshot = partnerSnapshot(selfIsA ? match.snapshot_b : match.snapshot_a);
-  const partner = db.prepare("SELECT last_heartbeat_at FROM users WHERE id = ?").get(partnerId) as
-    | { last_heartbeat_at: number | null }
-    | undefined;
+  const partner = await db.one<HeartbeatRow>("SELECT last_heartbeat_at FROM users WHERE id = $1", [
+    partnerId,
+  ]);
   const heartbeat = partner?.last_heartbeat_at ?? null;
   const away = heartbeat == null || heartbeat <= now - PRESENCE_MS;
-  const messages = db
-    .prepare(
-      `SELECT id, sender_id, body, created_at
-       FROM messages
-       WHERE match_id = ? AND id > ?
-       ORDER BY id ASC`,
-    )
-    .all(match.id, afterMessageId) as MessageRow[];
+  const messages = await db.query<MessageRow>(
+    `SELECT id, sender_id, body, created_at
+     FROM messages
+     WHERE match_id = $1 AND id > $2
+     ORDER BY id ASC`,
+    [match.id, afterMessageId],
+  );
   return {
     view: "chat",
     selfId: userId,
@@ -210,14 +216,14 @@ function waitingNotice(cache: NowPlayingRow | undefined, now: number): string | 
   return null;
 }
 
-export function joinQueue(
+export async function joinQueue(
   db: Db,
   userId: number,
   now: number,
-): "waiting" | "matched" | "unavailable" | "in_chat" {
-  if (activeMatch(db, userId)) return "in_chat";
+): Promise<"waiting" | "matched" | "unavailable" | "in_chat"> {
+  if (await activeMatch(db, userId)) return "in_chat";
 
-  const cache = nowPlaying(db, userId);
+  const cache = await nowPlaying(db, userId);
   if (
     !cache ||
     cache.is_now_playing !== 1 ||
@@ -230,101 +236,109 @@ export function joinQueue(
     return "unavailable";
   }
 
-  const existing = queueFor(db, userId);
+  const existing = await queueFor(db, userId);
   if (existing?.song_key === cache.song_key) return "waiting";
 
   if (existing) {
-    db.prepare(
+    await db.exec(
       `UPDATE queue
-       SET song_key = ?, artist = ?, track = ?, artwork_url = ?, joined_at = ?
-       WHERE user_id = ?`,
-    ).run(cache.song_key, cache.artist, cache.track, cache.artwork_url, now, userId);
+       SET song_key = $1, artist = $2, track = $3, artwork_url = $4, joined_at = $5
+       WHERE user_id = $6`,
+      [cache.song_key, cache.artist, cache.track, cache.artwork_url, now, userId],
+    );
   } else {
-    db.prepare(
+    await db.exec(
       `INSERT INTO queue (user_id, song_key, artist, track, artwork_url, joined_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(userId, cache.song_key, cache.artist, cache.track, cache.artwork_url, now);
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, cache.song_key, cache.artist, cache.track, cache.artwork_url, now],
+    );
   }
 
-  tryPair(db, cache.song_key, now);
-  if (activeMatch(db, userId)) return "matched";
+  await tryPair(db, cache.song_key, now);
+  if (await activeMatch(db, userId)) return "matched";
   return "waiting";
 }
 
-export function cancelQueue(db: Db, userId: number): void {
-  db.prepare("DELETE FROM queue WHERE user_id = ?").run(userId);
+export async function cancelQueue(db: Db, userId: number): Promise<void> {
+  await db.exec("DELETE FROM queue WHERE user_id = $1", [userId]);
 }
 
-export function logout(db: Db, sessionId: string): void {
-  const row = db.prepare("SELECT user_id FROM sessions WHERE id = ?").get(sessionId) as
-    | { user_id: number }
-    | undefined;
-  deleteSession(db, sessionId);
+export async function logout(db: Db, sessionId: string): Promise<void> {
+  const row = await db.one<UserIdRow>("SELECT user_id FROM sessions WHERE id = $1", [sessionId]);
+  await deleteSession(db, sessionId);
   if (!row) return;
-  db.prepare("DELETE FROM queue WHERE user_id = ?").run(row.user_id);
+  await db.exec("DELETE FROM queue WHERE user_id = $1", [row.user_id]);
 }
 
-export function sendMessage(
+export async function sendMessage(
   db: Db,
   userId: number,
   body: string,
   now: number,
-): { ok: true; id: number } | { ok: false; error: "empty" | "too_long" | "no_match" } {
+): Promise<{ ok: true; id: number } | { ok: false; error: "empty" | "too_long" | "no_match" }> {
   const trimmed = body.trim();
   if (trimmed.length === 0) return { ok: false, error: "empty" };
   if (trimmed.length > 500) return { ok: false, error: "too_long" };
-  const match = activeMatch(db, userId);
+  const match = await activeMatch(db, userId);
   if (!match) return { ok: false, error: "no_match" };
-  const inserted = db
-    .prepare("INSERT INTO messages (match_id, sender_id, body, created_at) VALUES (?, ?, ?, ?)")
-    .run(match.id, userId, trimmed, now);
-  return { ok: true, id: Number(inserted.lastInsertRowid) };
+  const inserted = await db.one<IdRow>(
+    "INSERT INTO messages (match_id, sender_id, body, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
+    [match.id, userId, trimmed, now],
+  );
+  if (!inserted) throw new Error("Message insert did not return an id");
+  return { ok: true, id: inserted.id };
 }
 
-export function leaveMatch(db: Db, userId: number, now: number): { ended: boolean } {
-  const end = db.transaction(() => {
-    const match = activeMatch(db, userId);
+export async function leaveMatch(
+  db: Db,
+  userId: number,
+  now: number,
+): Promise<{ ended: boolean }> {
+  return db.transaction(async (tx) => {
+    const match = await activeMatch(tx, userId);
     if (!match) return { ended: false };
-    const updated = db
-      .prepare(
-        `UPDATE matches
-         SET status = 'ended', ended_by = ?, ended_at = ?
-         WHERE id = ? AND status = 'active'`,
-      )
-      .run(userId, now, match.id);
-    if (updated.changes === 0) return { ended: false };
+    const updated = await tx.one<IdRow>(
+      `UPDATE matches
+       SET status = 'ended', ended_by = $1, ended_at = $2
+       WHERE id = $3 AND status = 'active'
+       RETURNING id`,
+      [userId, now, match.id],
+    );
+    if (!updated) return { ended: false };
     const lo = Math.min(match.user_a_id, match.user_b_id);
     const hi = Math.max(match.user_a_id, match.user_b_id);
-    db.prepare("INSERT OR IGNORE INTO pairs (user_lo, user_hi) VALUES (?, ?)").run(lo, hi);
+    await tx.exec(
+      "INSERT INTO pairs (user_lo, user_hi) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [lo, hi],
+    );
     return { ended: true };
   });
-  return end.immediate();
 }
 
-export function readState(
+export async function readState(
   db: Db,
   sessionId: string | null,
   now: number,
   afterMessageId: number,
-): AppState {
+): Promise<AppState> {
   if (sessionId == null) return { view: "signed_out", error: null };
-  const session = readSession(db, sessionId, now);
+  const session = await readSession(db, sessionId, now);
   if (!session) return { view: "signed_out", error: null };
 
-  const match = activeMatch(db, session.userId);
+  const match = await activeMatch(db, session.userId);
   if (match) return chatState(db, session.userId, match, afterMessageId, now);
 
-  const queued = queueFor(db, session.userId);
+  const queued = await queueFor(db, session.userId);
   if (queued) {
-    tryPair(db, queued.song_key, now);
-    const paired = activeMatch(db, session.userId);
+    await tryPair(db, queued.song_key, now);
+    const paired = await activeMatch(db, session.userId);
     if (paired) return chatState(db, session.userId, paired, afterMessageId, now);
     return {
       view: "waiting",
       song: { artist: queued.artist, track: queued.track, artworkUrl: queued.artwork_url },
-      notice: waitingNotice(nowPlaying(db, session.userId), now),
+      notice: waitingNotice(await nowPlaying(db, session.userId), now),
     };
   }
 
-  return homeState(nowPlaying(db, session.userId), now);
+  return homeState(await nowPlaying(db, session.userId), now);
 }

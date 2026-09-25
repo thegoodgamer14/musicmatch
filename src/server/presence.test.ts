@@ -1,8 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { openDatabase } from "./db";
+import { describe, expect, it } from "vitest";
+import { openTestDatabase, type Db } from "./db";
 import type { LastfmClient, LastfmTrack } from "./lastfm";
 import { songKey } from "./song-key";
 import {
@@ -23,17 +20,32 @@ import {
   upsertUser,
 } from "./presence";
 
-const dirs: string[] = [];
+interface ExpiresRow extends Record<string, unknown> {
+  expires_at: number;
+}
 
-afterEach(() => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-  dirs.length = 0;
-});
+interface HeartbeatRow extends Record<string, unknown> {
+  last_heartbeat_at: number;
+}
 
-function tempDb() {
-  const dir = mkdtempSync(join(tmpdir(), "musicmatch-"));
-  dirs.push(dir);
-  return openDatabase(join(dir, "app.db"));
+interface IdRow extends Record<string, unknown> {
+  id: string;
+}
+
+interface UserProfileRow extends Record<string, unknown> {
+  lastfm_session_key: string;
+  avatar_url: string | null;
+  profile_url: string;
+  profile_fetched_at: number;
+  created_at: number;
+}
+
+interface CountRow extends Record<string, unknown> {
+  count: number;
+}
+
+function tempDb(): Promise<Db> {
+  return openTestDatabase();
 }
 
 function track(partial: Partial<LastfmTrack> & Pick<LastfmTrack, "artist" | "track">): LastfmTrack {
@@ -72,20 +84,16 @@ function fakeClient(options: {
   return { client, calls, seen };
 }
 
-function insertQueue(
-  db: ReturnType<typeof tempDb>,
-  userId: number,
-  artist: string,
-  title: string,
-) {
-  db.prepare(
-    "INSERT INTO queue (user_id, song_key, artist, track, artwork_url, joined_at) VALUES (?, ?, ?, ?, NULL, 1)",
-  ).run(userId, songKey(artist, title), artist, title);
+async function insertQueue(db: Db, userId: number, artist: string, title: string) {
+  await db.exec(
+    "INSERT INTO queue (user_id, song_key, artist, track, artwork_url, joined_at) VALUES ($1, $2, $3, $4, NULL, 1)",
+    [userId, songKey(artist, title), artist, title],
+  );
 }
 
 describe("constants and copy", () => {
   it("uses the presence windows and the exact user-facing strings", () => {
-    expect(PRESENCE_MS).toBe(30_000);
+    expect(PRESENCE_MS).toBe(90_000);
     expect(LASTFM_REFRESH_MS).toBe(15_000);
     expect(NOW_PLAYING_TTL_MS).toBe(60_000);
     expect(PROFILE_TTL_MS).toBe(60 * 60 * 1000);
@@ -104,73 +112,67 @@ describe("constants and copy", () => {
 });
 
 describe("sessions", () => {
-  it("extends expires_at to now + SESSION_TTL_MS and sets last_heartbeat_at", () => {
-    const db = tempDb();
+  it("extends expires_at to now + SESSION_TTL_MS and sets last_heartbeat_at", async () => {
+    const db = await tempDb();
     const start = 1_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now: start,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    const sessionId = createSession(db, userId, start);
+    const sessionId = await createSession(db, userId, start);
     expect(sessionId).toMatch(/^[0-9a-f]{64}$/);
-    const created = db.prepare("SELECT expires_at FROM sessions WHERE id = ?").get(sessionId) as {
-      expires_at: number;
-    };
-    expect(created.expires_at).toBe(start + SESSION_TTL_MS);
+    const created = await db.one<ExpiresRow>("SELECT expires_at FROM sessions WHERE id = $1", [sessionId]);
+    expect(created?.expires_at).toBe(start + SESSION_TTL_MS);
 
     const now = start + 5_000;
-    recordHeartbeat(db, sessionId, now);
-    const session = db.prepare("SELECT expires_at FROM sessions WHERE id = ?").get(sessionId) as {
-      expires_at: number;
-    };
-    const user = db.prepare("SELECT last_heartbeat_at FROM users WHERE id = ?").get(userId) as {
-      last_heartbeat_at: number;
-    };
-    expect(session.expires_at).toBe(now + SESSION_TTL_MS);
-    expect(user.last_heartbeat_at).toBe(now);
+    await recordHeartbeat(db, sessionId, now);
+    const session = await db.one<ExpiresRow>("SELECT expires_at FROM sessions WHERE id = $1", [sessionId]);
+    const user = await db.one<HeartbeatRow>("SELECT last_heartbeat_at FROM users WHERE id = $1", [userId]);
+    expect(session?.expires_at).toBe(now + SESSION_TTL_MS);
+    expect(user?.last_heartbeat_at).toBe(now);
 
-    recordHeartbeat(db, "missing-session", now + 1);
-    const unchanged = db.prepare("SELECT last_heartbeat_at FROM users WHERE id = ?").get(userId) as {
-      last_heartbeat_at: number;
-    };
-    expect(unchanged.last_heartbeat_at).toBe(now);
+    await recordHeartbeat(db, "missing-session", now + 1);
+    const unchanged = await db.one<HeartbeatRow>("SELECT last_heartbeat_at FROM users WHERE id = $1", [
+      userId,
+    ]);
+    expect(unchanged?.last_heartbeat_at).toBe(now);
   });
 
-  it("reads an expired session as null and deletes the row", () => {
-    const db = tempDb();
+  it("reads an expired session as null and deletes the row", async () => {
+    const db = await tempDb();
     const now = 50_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    const sessionId = createSession(db, userId, now);
+    const sessionId = await createSession(db, userId, now);
     const expires = now + SESSION_TTL_MS;
-    expect(readSession(db, sessionId, expires - 1)).toEqual({ userId });
-    expect(readSession(db, sessionId, expires)).toBeNull();
-    expect(db.prepare("SELECT id FROM sessions WHERE id = ?").get(sessionId)).toBeUndefined();
-    expect(readSession(db, "missing", now)).toBeNull();
+    expect(await readSession(db, sessionId, expires - 1)).toEqual({ userId });
+    expect(await readSession(db, sessionId, expires)).toBeNull();
+    expect(await db.one<IdRow>("SELECT id FROM sessions WHERE id = $1", [sessionId])).toBeUndefined();
+    expect(await readSession(db, "missing", now)).toBeNull();
   });
 
-  it("deletes only the named session", () => {
-    const db = tempDb();
-    const userId = upsertUser(db, {
+  it("deletes only the named session", async () => {
+    const db = await tempDb();
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now: 1,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    const keep = createSession(db, userId, 1);
-    const drop = createSession(db, userId, 1);
-    deleteSession(db, drop);
-    expect(readSession(db, drop, 1)).toBeNull();
-    expect(readSession(db, keep, 1)).toEqual({ userId });
+    const keep = await createSession(db, userId, 1);
+    const drop = await createSession(db, userId, 1);
+    await deleteSession(db, drop);
+    expect(await readSession(db, drop, 1)).toBeNull();
+    expect(await readSession(db, keep, 1)).toEqual({ userId });
   });
 
   it("omits Secure on http and sets Secure, HttpOnly, and SameSite=Lax on https", () => {
@@ -187,16 +189,16 @@ describe("sessions", () => {
     expect(httpsCookie).toContain("SameSite=Lax");
   });
 
-  it("updates the session key when the Last.fm username already exists", () => {
-    const db = tempDb();
-    const first = upsertUser(db, {
+  it("updates the session key when the Last.fm username already exists", async () => {
+    const db = await tempDb();
+    const first = await upsertUser(db, {
       username: "ada",
       sessionKey: "old-key",
       now: 1,
       avatarUrl: "https://img.example/old.jpg",
       profileUrl: "https://www.last.fm/user/ada",
     });
-    const second = upsertUser(db, {
+    const second = await upsertUser(db, {
       username: "ada",
       sessionKey: "new-key",
       now: 2,
@@ -204,17 +206,10 @@ describe("sessions", () => {
       profileUrl: "https://www.last.fm/user/Ada",
     });
     expect(second).toBe(first);
-    const row = db
-      .prepare(
-        "SELECT lastfm_session_key, avatar_url, profile_url, profile_fetched_at, created_at FROM users WHERE id = ?",
-      )
-      .get(first) as {
-      lastfm_session_key: string;
-      avatar_url: string | null;
-      profile_url: string;
-      profile_fetched_at: number;
-      created_at: number;
-    };
+    const row = await db.one<UserProfileRow>(
+      "SELECT lastfm_session_key, avatar_url, profile_url, profile_fetched_at, created_at FROM users WHERE id = $1",
+      [first],
+    );
     expect(row).toEqual({
       lastfm_session_key: "new-key",
       avatar_url: null,
@@ -243,9 +238,9 @@ describe("refreshIfDue", () => {
   ];
 
   it("stores the now-playing track and five recent artists, then skips a call 10 seconds later", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 2_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
@@ -262,18 +257,9 @@ describe("refreshIfDue", () => {
     expect(calls.recent).toBe(1);
     expect(calls.info).toBe(0);
     expect(seen).toEqual({ username: "ada", sessionKey: "lastfm-key" });
-    const row = db.prepare("SELECT * FROM now_playing WHERE user_id = ?").get(userId) as {
-      artist: string;
-      track: string;
-      album: string;
-      artwork_url: string;
-      is_now_playing: number;
-      song_key: string;
-      recent_artists: string;
-      fetched_at: number;
-      attempted_at: number;
-      error: string | null;
-    };
+    const row = await db.one<Record<string, unknown>>("SELECT * FROM now_playing WHERE user_id = $1", [
+      userId,
+    ]);
     expect(row).toMatchObject({
       artist: "The Beatles",
       track: "Yesterday",
@@ -295,16 +281,16 @@ describe("refreshIfDue", () => {
   });
 
   it("deletes the queue row when the song changes and keeps it when the song matches", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 3_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    insertQueue(db, userId, "Journey", "Don't Stop");
+    await insertQueue(db, userId, "Journey", "Don't Stop");
     const changed = fakeClient({
       recent: () => ({
         ok: true,
@@ -312,16 +298,17 @@ describe("refreshIfDue", () => {
       }),
     });
     await refreshIfDue(db, userId, changed.client, now);
+    expect(await db.one("SELECT user_id FROM queue WHERE user_id = $1", [userId])).toBeUndefined();
     expect(
-      db.prepare("SELECT user_id FROM queue WHERE user_id = ?").get(userId),
-    ).toBeUndefined();
-    expect(
-      (db.prepare("SELECT song_key FROM now_playing WHERE user_id = ?").get(userId) as {
-        song_key: string;
-      }).song_key,
+      (
+        await db.one<{ song_key: string } & Record<string, unknown>>(
+          "SELECT song_key FROM now_playing WHERE user_id = $1",
+          [userId],
+        )
+      )?.song_key,
     ).toBe(songKey("Journey", "Separate Ways"));
 
-    insertQueue(db, userId, "Journey", "Separate Ways");
+    await insertQueue(db, userId, "Journey", "Separate Ways");
     const same = fakeClient({
       recent: () => ({
         ok: true,
@@ -330,22 +317,22 @@ describe("refreshIfDue", () => {
     });
     await refreshIfDue(db, userId, same.client, now + LASTFM_REFRESH_MS);
     expect(same.calls.recent).toBe(1);
-    expect(db.prepare("SELECT song_key FROM queue WHERE user_id = ?").get(userId)).toEqual({
+    expect(await db.one("SELECT song_key FROM queue WHERE user_id = $1", [userId])).toEqual({
       song_key: songKey("Journey", "Separate Ways"),
     });
   });
 
   it("deletes the queue row when nothing is now playing", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 4_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    insertQueue(db, userId, "Journey", "Don't Stop");
+    await insertQueue(db, userId, "Journey", "Don't Stop");
     const { client } = fakeClient({
       recent: () => ({
         ok: true,
@@ -353,15 +340,11 @@ describe("refreshIfDue", () => {
       }),
     });
     await refreshIfDue(db, userId, client, now);
-    expect(db.prepare("SELECT user_id FROM queue WHERE user_id = ?").get(userId)).toBeUndefined();
-    const row = db
-      .prepare("SELECT is_now_playing, song_key, recent_artists, error FROM now_playing WHERE user_id = ?")
-      .get(userId) as {
-      is_now_playing: number;
-      song_key: string | null;
-      recent_artists: string;
-      error: string | null;
-    };
+    expect(await db.one("SELECT user_id FROM queue WHERE user_id = $1", [userId])).toBeUndefined();
+    const row = await db.one(
+      "SELECT is_now_playing, song_key, recent_artists, error FROM now_playing WHERE user_id = $1",
+      [userId],
+    );
     expect(row).toEqual({
       is_now_playing: 0,
       song_key: null,
@@ -371,29 +354,25 @@ describe("refreshIfDue", () => {
   });
 
   it("deletes the queue row and sets error to private", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 5_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    insertQueue(db, userId, "Journey", "Don't Stop");
+    await insertQueue(db, userId, "Journey", "Don't Stop");
     const { client } = fakeClient({
       recent: () => ({ ok: false, reason: "private" }),
     });
     await refreshIfDue(db, userId, client, now);
-    expect(db.prepare("SELECT user_id FROM queue WHERE user_id = ?").get(userId)).toBeUndefined();
-    const row = db
-      .prepare("SELECT is_now_playing, error, fetched_at, attempted_at FROM now_playing WHERE user_id = ?")
-      .get(userId) as {
-      is_now_playing: number;
-      error: string;
-      fetched_at: number;
-      attempted_at: number;
-    };
+    expect(await db.one("SELECT user_id FROM queue WHERE user_id = $1", [userId])).toBeUndefined();
+    const row = await db.one(
+      "SELECT is_now_playing, error, fetched_at, attempted_at FROM now_playing WHERE user_id = $1",
+      [userId],
+    );
     expect(row).toEqual({
       is_now_playing: 0,
       error: "private",
@@ -403,9 +382,9 @@ describe("refreshIfDue", () => {
   });
 
   it("keeps a cache fetched 10 seconds ago and sets error to unreachable without moving fetched_at", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 6_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
@@ -413,29 +392,21 @@ describe("refreshIfDue", () => {
       profileUrl: "https://www.last.fm/user/ada",
     });
     const fetchedAt = now - 10_000;
-    db.prepare(
+    await db.exec(
       `INSERT INTO now_playing (
         user_id, artist, track, album, artwork_url, is_now_playing, song_key,
         recent_artists, fetched_at, attempted_at, error
-      ) VALUES (?, 'Journey', 'Don''t Stop', 'Escape', 'https://img.example/j.jpg', 1, ?, '["Journey"]', ?, ?, NULL)`,
-    ).run(userId, songKey("Journey", "Don't Stop"), fetchedAt, now - LASTFM_REFRESH_MS - 1);
+      ) VALUES ($1, 'Journey', 'Don''t Stop', 'Escape', 'https://img.example/j.jpg', 1, $2, '["Journey"]', $3, $4, NULL)`,
+      [userId, songKey("Journey", "Don't Stop"), fetchedAt, now - LASTFM_REFRESH_MS - 1],
+    );
     const { client, calls } = fakeClient({
       recent: () => ({ ok: false, reason: "unreachable" }),
     });
     await refreshIfDue(db, userId, client, now);
     expect(calls.recent).toBe(1);
-    const row = db.prepare("SELECT * FROM now_playing WHERE user_id = ?").get(userId) as {
-      artist: string;
-      track: string;
-      album: string;
-      artwork_url: string;
-      is_now_playing: number;
-      song_key: string;
-      recent_artists: string;
-      fetched_at: number;
-      attempted_at: number;
-      error: string;
-    };
+    const row = await db.one<Record<string, unknown>>("SELECT * FROM now_playing WHERE user_id = $1", [
+      userId,
+    ]);
     expect(row).toMatchObject({
       artist: "Journey",
       track: "Don't Stop",
@@ -448,9 +419,10 @@ describe("refreshIfDue", () => {
       attempted_at: now,
       error: "unreachable",
     });
-    const user = db
-      .prepare("SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = ?")
-      .get(userId);
+    const user = await db.one(
+      "SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = $1",
+      [userId],
+    );
     expect(user).toEqual({
       avatar_url: "https://img.example/ada.jpg",
       profile_url: "https://www.last.fm/user/ada",
@@ -459,18 +431,18 @@ describe("refreshIfDue", () => {
   });
 
   it("deletes the user's session when recent tracks are rejected", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 7_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now,
       avatarUrl: null,
       profileUrl: "https://www.last.fm/user/ada",
     });
-    db.prepare("UPDATE users SET profile_fetched_at = NULL WHERE id = ?").run(userId);
-    const sessionId = createSession(db, userId, now);
-    const other = createSession(db, userId, now);
+    await db.exec("UPDATE users SET profile_fetched_at = NULL WHERE id = $1", [userId]);
+    const sessionId = await createSession(db, userId, now);
+    const other = await createSession(db, userId, now);
     const { client, calls } = fakeClient({
       recent: () => ({ ok: false, reason: "rejected" }),
       info: () => ({
@@ -482,22 +454,23 @@ describe("refreshIfDue", () => {
     await refreshIfDue(db, userId, client, now);
     expect(calls.recent).toBe(1);
     expect(calls.info).toBe(0);
-    expect(readSession(db, sessionId, now)).toBeNull();
-    expect(readSession(db, other, now)).toBeNull();
+    expect(await readSession(db, sessionId, now)).toBeNull();
+    expect(await readSession(db, other, now)).toBeNull();
+    expect(await db.one<CountRow>("SELECT COUNT(*) AS count FROM sessions WHERE user_id = $1", [userId])).toEqual({
+      count: 0,
+    });
     expect(
-      db.prepare("SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?").get(userId),
-    ).toEqual({ count: 0 });
-    expect(
-      (db.prepare("SELECT error FROM now_playing WHERE user_id = ?").get(userId) as { error: string })
-        .error,
+      (await db.one<{ error: string } & Record<string, unknown>>("SELECT error FROM now_playing WHERE user_id = $1", [
+        userId,
+      ]))?.error,
     ).toBe("rejected");
   });
 
   it("does not request profile info when profile_fetched_at is 30 minutes old", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 8_000_000;
     const fetchedAt = now - 30 * 60 * 1000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now: fetchedAt,
@@ -516,7 +489,7 @@ describe("refreshIfDue", () => {
     expect(calls.recent).toBe(1);
     expect(calls.info).toBe(0);
     expect(
-      db.prepare("SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = ?").get(userId),
+      await db.one("SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = $1", [userId]),
     ).toEqual({
       avatar_url: "https://img.example/ada.jpg",
       profile_url: "https://www.last.fm/user/ada",
@@ -525,9 +498,9 @@ describe("refreshIfDue", () => {
   });
 
   it("refreshes profile info when it is older than an hour and drops sessions if that info is rejected", async () => {
-    const db = tempDb();
+    const db = await tempDb();
     const now = 9_000_000;
-    const userId = upsertUser(db, {
+    const userId = await upsertUser(db, {
       username: "ada",
       sessionKey: "lastfm-key",
       now: now - PROFILE_TTL_MS - 1,
@@ -545,7 +518,7 @@ describe("refreshIfDue", () => {
     await refreshIfDue(db, userId, updated.client, now);
     expect(updated.calls.info).toBe(1);
     expect(
-      db.prepare("SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = ?").get(userId),
+      await db.one("SELECT avatar_url, profile_url, profile_fetched_at FROM users WHERE id = $1", [userId]),
     ).toEqual({
       avatar_url: "https://img.example/new.jpg",
       profile_url: "https://www.last.fm/user/Ada",
@@ -553,20 +526,18 @@ describe("refreshIfDue", () => {
     });
 
     const rejectedNow = now + LASTFM_REFRESH_MS;
-    db.prepare("UPDATE users SET profile_fetched_at = ? WHERE id = ?").run(
+    await db.exec("UPDATE users SET profile_fetched_at = $1 WHERE id = $2", [
       rejectedNow - PROFILE_TTL_MS - 1,
       userId,
-    );
-    const sessionId = createSession(db, userId, rejectedNow);
+    ]);
+    const sessionId = await createSession(db, userId, rejectedNow);
     const rejected = fakeClient({
       recent: () => ({ ok: true, tracks: [] }),
       info: () => ({ ok: false, reason: "rejected" }),
     });
     await refreshIfDue(db, userId, rejected.client, rejectedNow);
-    expect(readSession(db, sessionId, rejectedNow)).toBeNull();
-    expect(
-      db.prepare("SELECT avatar_url, profile_url FROM users WHERE id = ?").get(userId),
-    ).toEqual({
+    expect(await readSession(db, sessionId, rejectedNow)).toBeNull();
+    expect(await db.one("SELECT avatar_url, profile_url FROM users WHERE id = $1", [userId])).toEqual({
       avatar_url: "https://img.example/new.jpg",
       profile_url: "https://www.last.fm/user/Ada",
     });

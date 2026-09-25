@@ -5,7 +5,7 @@ describe("songKey", () => {
   it("normalizes case and whitespace and ignores nothing about punctuation", () => {
     expect(normalizeName("  Let   It\tBe ")).toBe("let it be");
     expect(songKey(" The Beatles ", "  Let   It  Be ")).toBe(
-      "the beatles\u0000let it be",
+      "the beatles\u001flet it be",
     );
     expect(songKey("THE BEATLES", "let it be")).toBe(
       songKey("the beatles", "let it be"),
