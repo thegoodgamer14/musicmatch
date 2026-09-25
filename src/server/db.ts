@@ -197,7 +197,12 @@ export async function withRequestDb<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await requestDb.run(wrapPostgres(client), fn);
   } finally {
-    await client.end();
+    // Hyperdrive's postgres.js client can leave end() unresolved. Waiting on it
+    // makes Cloudflare cancel the request before the response is sent.
+    await Promise.race([
+      client.end({ timeout: 1 }).catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 200)),
+    ]);
   }
 }
 

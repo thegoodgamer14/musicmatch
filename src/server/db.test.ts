@@ -75,4 +75,18 @@ describe("withRequestDb", () => {
     expect(ended).toBe(3);
     expect(() => getDb()).toThrow("Database client used outside a request");
   });
+
+  it("returns the handler result when closing the client never finishes", async () => {
+    setPostgresConnectorForTests(() => ({
+      async unsafe() {
+        return Object.assign([], { columns: null });
+      },
+      end() {
+        return new Promise(() => undefined);
+      },
+    }));
+
+    const result = await withRequestDb(async () => "ready");
+    expect(result).toBe("ready");
+  });
 });
