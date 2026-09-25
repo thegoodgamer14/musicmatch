@@ -157,6 +157,30 @@ describe("recentArtists", () => {
       "Queen",
     ]);
   });
+
+  it("puts the artist playing now first even when that track is after five others", () => {
+    const tracks: LastfmTrack[] = [
+      "Foo Fighters",
+      "Troy",
+      "Justin Bieber",
+      "Taylor Swift",
+      "Queen",
+      "Red Hot Chili Peppers",
+    ].map((artist, index, all) => ({
+      artist,
+      track: "Song",
+      album: null,
+      artworkUrl: null,
+      nowPlaying: index === all.length - 1,
+    }));
+    expect(recentArtists(tracks)).toEqual([
+      "Red Hot Chili Peppers",
+      "Foo Fighters",
+      "Troy",
+      "Justin Bieber",
+      "Taylor Swift",
+    ]);
+  });
 });
 
 describe("createLastfmClient", () => {

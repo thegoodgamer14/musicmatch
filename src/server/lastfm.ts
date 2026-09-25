@@ -43,9 +43,12 @@ export function signLastfmParams(params: Record<string, string>, secret: string)
 }
 
 export function recentArtists(tracks: LastfmTrack[]): string[] {
+  const nowPlaying = tracks.find((track) => track.nowPlaying && track.artist.trim() !== "");
+  const ordered = nowPlaying ? [nowPlaying, ...tracks.filter((track) => track !== nowPlaying)] : tracks;
   const seen = new Set<string>();
   const names: string[] = [];
-  for (const track of tracks) {
+  for (const track of ordered) {
+    if (track.artist.trim() === "") continue;
     const key = normalizeName(track.artist);
     if (seen.has(key)) continue;
     seen.add(key);
