@@ -253,6 +253,23 @@ describe("tryPair", () => {
     expect(await queuedIds(db)).toEqual([]);
   });
 
+  it("aborts when a chosen queue row changes song before the re-check", async () => {
+    const db = await tempDb();
+    const changed = await seedWaiting(db, { username: "changed", joinedAt: 1 });
+    const other = await seedWaiting(db, { username: "other", joinedAt: 2 });
+
+    const id = await tryPair(db, KEY, NOW, async (tx) => {
+      await tx.exec(
+        "UPDATE queue SET song_key = $1, artist = 'Other Artist', track = 'Other Track' WHERE user_id = $2",
+        [OTHER_KEY, changed],
+      );
+    });
+
+    expect(id).toBeNull();
+    expect(await matchRows(db)).toEqual([]);
+    expect(await queuedIds(db)).toEqual([changed, other].sort((left, right) => left - right));
+  });
+
   it("lets only one of two overlapping tryPair calls create a match", async () => {
     const db = await tempDb();
     await seedWaiting(db, { username: "a", joinedAt: 1 });

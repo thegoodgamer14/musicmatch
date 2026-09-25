@@ -236,27 +236,50 @@ export async function joinQueue(
     return "unavailable";
   }
 
-  const existing = await queueFor(db, userId);
-  if (existing?.song_key === cache.song_key) return "waiting";
+  const songKey = cache.song_key;
 
-  if (existing) {
-    await db.exec(
-      `UPDATE queue
-       SET song_key = $1, artist = $2, track = $3, artwork_url = $4, joined_at = $5
-       WHERE user_id = $6`,
-      [cache.song_key, cache.artist, cache.track, cache.artwork_url, now, userId],
-    );
-  } else {
-    await db.exec(
-      `INSERT INTO queue (user_id, song_key, artist, track, artwork_url, joined_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [userId, cache.song_key, cache.artist, cache.track, cache.artwork_url, now],
-    );
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const outcome = await db.transaction(async (tx) => {
+      if (await activeMatch(tx, userId)) return "in_chat" as const;
+      const existing = await queueFor(tx, userId);
+      if (existing?.song_key === songKey) return "waiting" as const;
+
+      const lockKeys = [...new Set(existing ? [existing.song_key, songKey] : [songKey])].sort();
+      for (const key of lockKeys) {
+        await tx.exec("SELECT pg_advisory_xact_lock(hashtext($1))", [key]);
+      }
+
+      if (await activeMatch(tx, userId)) return "in_chat" as const;
+      const locked = await tx.one<QueueRow>(
+        `SELECT song_key, artist, track, artwork_url, joined_at
+         FROM queue WHERE user_id = $1 FOR UPDATE`,
+        [userId],
+      );
+      if (locked?.song_key === songKey) return "waiting" as const;
+      if (locked && !lockKeys.includes(locked.song_key)) return "retry" as const;
+
+      if (locked) {
+        await tx.exec(
+          `UPDATE queue
+           SET song_key = $1, artist = $2, track = $3, artwork_url = $4, joined_at = $5
+           WHERE user_id = $6`,
+          [songKey, cache.artist, cache.track, cache.artwork_url, now, userId],
+        );
+      } else {
+        await tx.exec(
+          `INSERT INTO queue (user_id, song_key, artist, track, artwork_url, joined_at)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [userId, songKey, cache.artist, cache.track, cache.artwork_url, now],
+        );
+      }
+
+      await tryPair(tx, songKey, now);
+      if (await activeMatch(tx, userId)) return "matched" as const;
+      return "waiting" as const;
+    });
+    if (outcome !== "retry") return outcome;
   }
-
-  await tryPair(db, cache.song_key, now);
-  if (await activeMatch(db, userId)) return "matched";
-  return "waiting";
+  throw new Error("Could not join the queue");
 }
 
 export async function cancelQueue(db: Db, userId: number): Promise<void> {

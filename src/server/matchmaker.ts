@@ -81,7 +81,12 @@ async function choose(db: Db, eligible: Eligible[]): Promise<[Eligible, Eligible
   return null;
 }
 
-export async function tryPair(db: Db, songKey: string, now: number): Promise<number | null> {
+export async function tryPair(
+  db: Db,
+  songKey: string,
+  now: number,
+  beforeRecheck?: (tx: Db) => Promise<void>,
+): Promise<number | null> {
   return db.transaction(async (tx) => {
     await tx.exec("SELECT pg_advisory_xact_lock(hashtext($1))", [songKey]);
     const eligible = await tx.query<Eligible>(
@@ -107,16 +112,19 @@ export async function tryPair(db: Db, songKey: string, now: number): Promise<num
     const chosen = await choose(tx, eligible);
     if (!chosen) return null;
     const [earlier, partner] = chosen;
+    if (beforeRecheck) await beforeRecheck(tx);
 
-    const queueA = await tx.one<QueueRow>(
-      "SELECT user_id, song_key, artist, track, artwork_url FROM queue WHERE user_id = $1",
-      [earlier.user_id],
+    const locked = await tx.query<QueueRow>(
+      `SELECT user_id, song_key, artist, track, artwork_url
+       FROM queue
+       WHERE user_id IN ($1, $2)
+       ORDER BY user_id
+       FOR UPDATE`,
+      [earlier.user_id, partner.user_id],
     );
-    const queueB = await tx.one<QueueRow>(
-      "SELECT user_id, song_key, artist, track, artwork_url FROM queue WHERE user_id = $1",
-      [partner.user_id],
-    );
-    if (!queueA || !queueB) return null;
+    const queueA = locked.find((row) => row.user_id === earlier.user_id);
+    const queueB = locked.find((row) => row.user_id === partner.user_id);
+    if (!queueA || !queueB || queueA.song_key !== songKey || queueB.song_key !== songKey) return null;
 
     const active = await tx.one<Found>(
       `SELECT 1 AS found FROM matches
