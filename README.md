@@ -36,7 +36,7 @@ npx wrangler secret put DATABASE_URL
 
 5. On the Last.fm API account, register `https://<worker-host>/api/auth/callback` as the only callback URL. Set the `APP_URL` secret to `https://<worker-host>` (no trailing path).
 
-The page checks state every 8 seconds and sends a heartbeat every 30 seconds so two open tabs stay under the Workers free daily request cap.
+The page checks state every 2 seconds. Last.fm is refreshed at most every 4 seconds, on that same request, so a play or pause shows up within about 5 seconds. A heartbeat still goes out every 30 seconds. Two tabs left open all day stay under the Workers free daily request cap.
 
 `npm run preview` builds the app and serves it in the Workers runtime. `npm run deploy` builds it and deploys it. Do not put those secrets in `wrangler.jsonc`.
 

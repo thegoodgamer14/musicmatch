@@ -96,9 +96,9 @@ async function insertQueue(db: Db, userId: number, artist: string, title: string
 describe("constants and copy", () => {
   it("uses the presence windows and the exact user-facing strings", () => {
     expect(PRESENCE_MS).toBe(90_000);
-    expect(STATE_POLL_MS).toBe(8000);
+    expect(STATE_POLL_MS).toBe(2000);
     expect(HEARTBEAT_MS).toBe(30000);
-    expect(LASTFM_REFRESH_MS).toBe(15_000);
+    expect(LASTFM_REFRESH_MS).toBe(4_000);
     expect(NOW_PLAYING_TTL_MS).toBe(60_000);
     expect(PROFILE_TTL_MS).toBe(60 * 60 * 1000);
     expect(SESSION_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000);
@@ -241,7 +241,7 @@ describe("refreshIfDue", () => {
     track({ artist: "David Bowie", track: "Heroes" }),
   ];
 
-  it("stores the now-playing track and five recent artists, then skips a call 10 seconds later", async () => {
+  it("stores the now-playing track and five recent artists, then skips a call inside the refresh window", async () => {
     const db = await tempDb();
     const now = 2_000_000;
     const userId = await upsertUser(db, {
@@ -256,7 +256,7 @@ describe("refreshIfDue", () => {
     });
 
     await refreshIfDue(db, userId, client, now);
-    await refreshIfDue(db, userId, client, now + 10_000);
+    await refreshIfDue(db, userId, client, now + LASTFM_REFRESH_MS - 1);
 
     expect(calls.recent).toBe(1);
     expect(calls.info).toBe(0);
